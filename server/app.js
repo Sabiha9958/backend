@@ -20,53 +20,48 @@ const permissionRoutes = require("../routes/role/permissionRoutes");
 // ============================================================================
 // CORS Configuration
 // ============================================================================
+const DEFAULT_ALLOWED_ORIGINS = [
+  "https://frontend-8if6.onrender.com",
+  "http://127.0.0.1:5173",
+];
+
 function buildAllowedOrigins() {
-  const env = process.env.ALLOWED_ORIGINS;
-  if (!env) {
-    return [
-      "https://frontend-8if6.onrender.com",
-      "http://127.0.0.1:5173",
-    ];
-  }
-  return env.split(",").map((o) => o.trim());
+  const raw = process.env.ALLOWED_ORIGINS;
+  if (!raw || !raw.trim()) return DEFAULT_ALLOWED_ORIGINS;
+
+  // split, trim, remove empties, dedupe
+  return [...new Set(raw.split(",").map(s => s.trim()).filter(Boolean))];
 }
 
 function corsOptions() {
   const allowedOrigins = buildAllowedOrigins();
+  const allowCredentials = true;
+
+  // If credentials are enabled, wildcard origin must NOT be used
+  if (allowCredentials && allowedOrigins.includes("*")) {
+    throw new Error(
+      "Invalid CORS config: ALLOWED_ORIGINS cannot contain '*' when credentials=true"
+    );
+  }
 
   return {
-    origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, Postman, etc.)
-      if (!origin) return callback(null, true);
+    origin: (origin, cb) => {
+      // Allow server-to-server / Postman / curl
+      if (!origin) return cb(null, true);
 
-      // Allow all origins if wildcard is set
-      if (allowedOrigins.includes("*")) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
 
-      // Check if origin is in allowed list
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      // Log and reject blocked origins
       logger.warn(`🚫 CORS blocked: ${origin}`);
-      return callback(
-        new Error(`CORS policy violation: ${origin} not allowed`)
-      );
+      return cb(new Error(`CORS blocked for origin: ${origin}`));
     },
-    credentials: true,
+    credentials: allowCredentials,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-Requested-With",
-      "X-Request-Id",
-      "Accept",
-      "Origin",
-    ],
-    exposedHeaders: ["Content-Range", "X-Content-Range", "X-Request-Id"],
-    maxAge: 86400, // 24 hours
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    exposedHeaders: ["X-Request-Id"],
+    maxAge: 86400,
   };
 }
+
 
 // ============================================================================
 // Security Configuration (Helmet)

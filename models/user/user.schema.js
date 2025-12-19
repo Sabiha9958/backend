@@ -1,10 +1,8 @@
-// user
-
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
   {
-    // basic
+    // Basic
     name: {
       type: String,
       required: [true, "Name is required"],
@@ -28,22 +26,33 @@ const userSchema = new mongoose.Schema(
       match: [/^[0-9]{10}$/, "Phone number must be exactly 10 digits"],
     },
 
-    // auth
+    // Auth
     password: {
       type: String,
       minlength: [6, "Password must be at least 6 characters"],
       select: false,
     },
-    googleId: { type: String },
+    googleId: { type: String, default: null },
+    refreshToken: { type: String, select: false },
+
+    // Media
     profilePicture: { type: String, default: null },
 
-    // profile
+    // Profile fields
     title: { type: String, trim: true, maxlength: 100 },
     department: { type: String, trim: true, maxlength: 100 },
     location: { type: String, trim: true, maxlength: 100 },
     bio: { type: String, trim: true, maxlength: 1000 },
 
-    // role
+    // NEW: Preset cover selection (matches your COVER_IMAGES ids)
+    coverId: {
+      type: Number,
+      default: 1,
+      min: 1,
+      max: 50,
+    },
+
+    // Role
     role: {
       type: String,
       enum: ["user", "staff", "admin"],
@@ -51,31 +60,28 @@ const userSchema = new mongoose.Schema(
       index: true,
     },
 
-    // status
+    // Status
     isActive: { type: Boolean, default: true, index: true },
     isDeleted: { type: Boolean, default: false, index: true },
 
-    // security
+    // Security / verification
     loginAttempts: { type: Number, default: 0 },
-    lockUntil: { type: Date },
-    emailVerificationToken: String,
-    emailVerificationExpire: Date,
+    lockUntil: { type: Date, default: null },
+    emailVerificationToken: { type: String, default: null },
+    emailVerificationExpire: { type: Date, default: null },
     isEmailVerified: { type: Boolean, default: false },
-    resetPasswordToken: String,
-    resetPasswordExpire: Date,
-    refreshToken: { type: String, select: false },
+    resetPasswordToken: { type: String, default: null },
+    resetPasswordExpire: { type: Date, default: null },
 
-    // audit
-    lastLogin: Date,
-    deletedAt: Date,
-    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    roleChangedAt: Date,
-    roleChangedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    roleChangeReason: { type: String, trim: true, maxlength: 1000 },
+    // Audit
+    lastLogin: { type: Date, default: null },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    roleChangedAt: { type: Date, default: null },
+    roleChangedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    roleChangeReason: { type: String, trim: true, maxlength: 1000, default: null },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 module.exports = userSchema;

@@ -76,10 +76,23 @@ const userSchema = new mongoose.Schema(
     // Audit
     lastLogin: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
-    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    deletedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
     roleChangedAt: { type: Date, default: null },
-    roleChangedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-    roleChangeReason: { type: String, trim: true, maxlength: 1000, default: null },
+    roleChangedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    roleChangeReason: {
+      type: String,
+      trim: true,
+      maxlength: 1000,
+      default: null,
+    },
   },
   { timestamps: true }
 );

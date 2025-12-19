@@ -1,4 +1,6 @@
 // backend/server/app.js
+"use strict";
+
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -18,10 +20,12 @@ const roleRoutes = require("../routes/role/roleRoutes");
 const permissionRoutes = require("../routes/role/permissionRoutes");
 
 // ============================================================================
-// CORS Configuration
+// CORS
 // ============================================================================
+
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://frontend-8if6.onrender.com",
+  "http://localhost:5173",
   "http://127.0.0.1:5173",
 ];
 
@@ -29,24 +33,23 @@ function buildAllowedOrigins() {
   const raw = process.env.ALLOWED_ORIGINS;
   if (!raw || !raw.trim()) return DEFAULT_ALLOWED_ORIGINS;
 
-  // split, trim, remove empties, dedupe
-  return [...new Set(raw.split(",").map(s => s.trim()).filter(Boolean))];
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
 }
 
-function corsOptions() {
+function makeCorsMiddleware() {
   const allowedOrigins = buildAllowedOrigins();
-  const allowCredentials = true;
+  const credentials = true;
 
-  // If credentials are enabled, wildcard origin must NOT be used
-  if (allowCredentials && allowedOrigins.includes("*")) {
+  // With credentials=true, you cannot return "*" for Access-Control-Allow-Origin
+  if (credentials && allowedOrigins.includes("*")) {
     throw new Error(
       "Invalid CORS config: ALLOWED_ORIGINS cannot contain '*' when credentials=true"
     );
   }
 
-  return {
-    origin: (origin, cb) => {
-      // Allow server-to-server / Postman / curl
+  const options = {
+    origin(origin, cb) {
+      // Requests like curl/Postman often have no Origin
       if (!origin) return cb(null, true);
 
       if (allowedOrigins.includes(origin)) return cb(null, true);
@@ -54,18 +57,31 @@ function corsOptions() {
       logger.warn(`🚫 CORS blocked: ${origin}`);
       return cb(new Error(`CORS blocked for origin: ${origin}`));
     },
-    credentials: allowCredentials,
+    credentials,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+    ],
     exposedHeaders: ["X-Request-Id"],
     maxAge: 86400,
+    preflightContinue: false,
+    optionsSuccessStatus: 204, // good default for preflight success
   };
+
+  return cors(options);
 }
 
 // ============================================================================
-// Security Configuration (Helmet)
+// Helmet
 // ============================================================================
+
 function helmetOptions() {
+  // If you enable CSP, ensure connect-src allows your frontend & websocket if used
+  // Otherwise browsers can block API calls at the CSP layer.
   return {
     contentSecurityPolicy: {
       directives: {
@@ -73,11 +89,13 @@ function helmetOptions() {
         scriptSrc: ["'self'", "'unsafe-inline'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'"],
+        // Allow outgoing connections from pages served by backend (mostly relevant if backend serves UI)
+        // Keeping it permissive enough to not break WS/API.
+        connectSrc: ["'self'", "https:", "http:", "ws:", "wss:"],
         fontSrc: ["'self'"],
         objectSrc: ["'none'"],
-        mediaSrc: ["'self'"],
-        frameSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'self'"],
       },
     },
     crossOriginEmbedderPolicy: false,
@@ -86,20 +104,19 @@ function helmetOptions() {
 }
 
 // ============================================================================
-// Middleware Utilities
+// Small utilities (unchanged behavior, cleaner)
 // ============================================================================
+
 function httpLogger() {
   return morgan("combined", {
-    stream: {
-      write: (message) => logger.info(message.trim()),
-    },
+    stream: { write: (message) => logger.info(message.trim()) },
     skip: (req) => req.url === "/api/health" || req.url === "/",
   });
 }
 
 function requestId() {
   return (req, res, next) => {
-    req.id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    req.id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     res.setHeader("X-Request-Id", req.id);
     next();
   };
@@ -107,16 +124,15 @@ function requestId() {
 
 function requestTimeout() {
   return (req, res, next) => {
-    const timeout = CONFIG.REQUEST_TIMEOUT || 30000;
+    const timeout = Number(CONFIG.REQUEST_TIMEOUT) || 30000;
+
     req.setTimeout(timeout, () => {
-      logger.warn(`⏱️ Request timeout: ${req.method} ${req.url}`);
+      logger.warn(`⏱️ Request timeout: ${req.method} ${req.originalUrl}`);
       if (!res.headersSent) {
-        res.status(408).json({
-          success: false,
-          message: "Request timeout",
-        });
+        res.status(408).json({ success: false, message: "Request timeout" });
       }
     });
+
     next();
   };
 }
@@ -124,14 +140,16 @@ function requestTimeout() {
 function slowRequestMonitor() {
   return (req, res, next) => {
     const start = Date.now();
+
     res.on("finish", () => {
       const duration = Date.now() - start;
       if (duration > 3000) {
         logger.warn(
-          `🐌 Slow request: ${req.method} ${req.url} took ${duration}ms`
+          `🐌 Slow request: ${req.method} ${req.originalUrl} took ${duration}ms`
         );
       }
     });
+
     next();
   };
 }
@@ -139,19 +157,20 @@ function slowRequestMonitor() {
 function trimBodyStrings() {
   return (req, res, next) => {
     if (req.body && typeof req.body === "object") {
-      Object.keys(req.body).forEach((key) => {
+      for (const key of Object.keys(req.body)) {
         if (typeof req.body[key] === "string") {
           req.body[key] = req.body[key].trim();
         }
-      });
+      }
     }
     next();
   };
 }
 
 // ============================================================================
-// Express App Builder
+// App builder
 // ============================================================================
+
 function buildExpressApp() {
   const app = express();
 
@@ -159,29 +178,32 @@ function buildExpressApp() {
   app.set("etag", false);
   app.disable("x-powered-by");
 
-  // 1) Security headers
+  // 1) CORS FIRST (critical for preflight)
+  const corsMw = makeCorsMiddleware();
+  app.use(corsMw);
+
+  // Global preflight handler (safe, explicit)
+  // When using app.use(cors(...)), preflight is already handled, but this helps
+  // in cases where other middleware might short-circuit OPTIONS. [web:9]
+  app.options("*", corsMw);
+
+  // 2) Security headers (after CORS)
   app.use(helmet(helmetOptions()));
-
-  // 2) CORS must be early
-  const c = cors(corsOptions());
-  app.use(c);
-
-  // Explicit preflight support (safe to include)
-  app.options("*", c);
 
   // 3) Compression
   app.use(
     compression({
       filter: (req, res) =>
         req.headers["x-no-compression"] ? false : compression.filter(req, res),
-      level: CONFIG.COMPRESSION_LEVEL || 6,
+      level: Number(CONFIG.COMPRESSION_LEVEL) || 6,
       threshold: 1024,
     })
   );
 
   // 4) Body parsing
-  app.use(express.json({ limit: CONFIG.MAX_FILE_SIZE || "10mb" }));
-  app.use(express.urlencoded({ limit: CONFIG.MAX_FILE_SIZE || "10mb", extended: true }));
+  const bodyLimit = CONFIG.MAX_FILE_SIZE || "10mb";
+  app.use(express.json({ limit: bodyLimit }));
+  app.use(express.urlencoded({ limit: bodyLimit, extended: true }));
 
   // 5) Observability
   app.use(httpLogger());
@@ -192,7 +214,7 @@ function buildExpressApp() {
   // 6) Sanitization
   app.use(trimBodyStrings());
 
-  // 7) Static
+  // 7) Static uploads
   app.use(
     "/uploads",
     express.static(UPLOAD_BASE, {
@@ -208,7 +230,7 @@ function buildExpressApp() {
     })
   );
 
-  // 8) Health checks (before limiter)
+  // 8) Health endpoints (before limiter)
   app.get("/", (req, res) => {
     res.status(200).json({
       success: true,
@@ -219,7 +241,6 @@ function buildExpressApp() {
       timestamp: new Date().toISOString(),
     });
   });
-
   app.head("/", (req, res) => res.status(200).end());
 
   app.get("/api/health", (req, res) => {
@@ -231,7 +252,7 @@ function buildExpressApp() {
     });
   });
 
-  // 9) Rate limit /api BUT SKIP OPTIONS (preflight)
+  // 9) Rate limit ONLY real API calls (never preflight)
   app.use("/api", (req, res, next) => {
     if (req.method === "OPTIONS") return next();
     return apiLimiter(req, res, next);
@@ -242,7 +263,7 @@ function buildExpressApp() {
   app.use("/api/permissions", permissionRoutes);
   attachRoutes(app);
 
-  // 11) Errors last
+  // 11) 404 + error handler last
   app.use(notFound);
   app.use(errorHandler);
 

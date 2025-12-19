@@ -24,13 +24,14 @@ const startServer = async () => {
     await connectDB();
 
     // Start server
-    server.listen(CONFIG.PORT, () => {
-      console.log(`\n🚀 Server running on port ${CONFIG.PORT}`);
-      console.log(`📡 API: http://localhost:${CONFIG.PORT}/api`);
-      console.log(
-        `🔌 WebSocket: ws://localhost:${CONFIG.PORT}/ws/complaints\n`
-      );
-    });
+ server.listen(CONFIG.PORT, () => {
+  console.log(`\n🚀 Server running on port ${CONFIG.PORT}`);
+
+  // Public (Render) endpoints for clients:
+  console.log(`📡 API: https://backend-h5g5.onrender.com/api`);
+  console.log(`🔌 WebSocket: wss://backend-h5g5.onrender.com/ws/complaints\n`);
+});
+
 
     // Graceful shutdown
     ["SIGTERM", "SIGINT", "SIGUSR2"].forEach((signal) => {

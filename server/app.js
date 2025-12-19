@@ -66,134 +66,24 @@ function corsOptions() {
 // ============================================================================
 // Security Configuration (Helmet)
 // ============================================================================
-function helmetOptions() {
-  return {
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https:"],
-        imgSrc: ["'self'", "data:", "https:", "http:"],
-        fontSrc: ["'self'", "https:", "data:"],
-        connectSrc: ["'self'", "ws:", "wss:", "https:", "http:"],
-        mediaSrc: ["'self'"],
-        objectSrc: ["'none'"],
-        frameSrc: ["'none'"],
-        upgradeInsecureRequests: CONFIG.IS_PRODUCTION ? [] : null,
-      },
-    },
-    crossOriginEmbedderPolicy: false,
-    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    frameguard: { action: "deny" },
-    hidePoweredBy: true,
-    hsts: CONFIG.IS_PRODUCTION
-      ? { maxAge: 31536000, includeSubDomains: true, preload: true }
-      : false,
-    noSniff: true,
-    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
-  };
-}
-
-// ============================================================================
-// Custom Middleware
-// ============================================================================
-
-// Add unique request ID to each request
-function requestId() {
-  return (req, res, next) => {
-    req.id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
-    res.setHeader("X-Request-Id", req.id);
-    next();
-  };
-}
-
-// Timeout protection for long-running requests
-function requestTimeout() {
-  return (req, res, next) => {
-    req.setTimeout(CONFIG.REQUEST_TIMEOUT, () => {
-      logger.error(`⏱️ Request timeout: ${req.method} ${req.originalUrl}`);
-      if (!res.headersSent) {
-        res.status(408).json({
-          success: false,
-          message: "Request timeout",
-          code: "REQUEST_TIMEOUT",
-          requestId: req.id,
-        });
-      }
-    });
-    next();
-  };
-}
-
-// Monitor and log slow requests
-function slowRequestMonitor() {
-  return (req, res, next) => {
-    const start = Date.now();
-    res.on("finish", () => {
-      const duration = Date.now() - start;
-      if (duration > 5000) {
-        logger.error(
-          `🐌 Very slow request: ${req.method} ${req.originalUrl} - ${duration}ms`
-        );
-      } else if (duration > 3000) {
-        logger.warn(
-          `⚠️ Slow request: ${req.method} ${req.originalUrl} - ${duration}ms`
-        );
-      }
-    });
-    next();
-  };
-}
-
-// Trim whitespace from string body fields
-function trimBodyStrings() {
-  return (req, _res, next) => {
-    if (!req.body || typeof req.body !== "object") return next();
-
-    for (const key of Object.keys(req.body)) {
-      if (typeof req.body[key] === "string") {
-        req.body[key] = req.body[key].trim();
-      }
-    }
-    next();
-  };
-}
-
-// HTTP request logger configuration
-function httpLogger() {
-  if (CONFIG.IS_DEVELOPMENT) {
-    return morgan("dev");
-  }
-
-  return morgan("combined", {
-    stream: logger.stream,
-    skip: (req) => req.url === "/api/health" || req.url === "/",
-  });
-}
-
-// ============================================================================
-// Express App Builder
-// ============================================================================
 function buildExpressApp() {
   const app = express();
 
-  // ========================================
-  // Core Settings
-  // ========================================
   app.set("trust proxy", 1);
   app.set("etag", false);
   app.disable("x-powered-by");
 
-  // ========================================
-  // Security Middleware
-  // ========================================
+  // 1) Security headers
   app.use(helmet(helmetOptions()));
-  app.use(cors(corsOptions()));
 
-  // ========================================
-  // Compression
-  // ========================================
+  // 2) CORS must be early
+  const c = cors(corsOptions());
+  app.use(c);
+
+  // Explicit preflight support (safe to include)
+  app.options("*", c); // [web:8]
+
+  // 3) Compression (ok here)
   app.use(
     compression({
       filter: (req, res) =>
@@ -203,28 +93,20 @@ function buildExpressApp() {
     })
   );
 
-  // ========================================
-  // Body Parsing
-  // ========================================
+  // 4) Body parsing
   app.use(express.json({ limit: CONFIG.MAX_FILE_SIZE }));
   app.use(express.urlencoded({ limit: CONFIG.MAX_FILE_SIZE, extended: true }));
 
-  // ========================================
-  // Request Observability
-  // ========================================
+  // 5) Observability
   app.use(httpLogger());
   app.use(requestId());
   app.use(requestTimeout());
   app.use(slowRequestMonitor());
 
-  // ========================================
-  // Input Sanitization
-  // ========================================
+  // 6) Sanitization
   app.use(trimBodyStrings());
 
-  // ========================================
-  // Static File Serving
-  // ========================================
+  // 7) Static
   app.use(
     "/uploads",
     express.static(UPLOAD_BASE, {
@@ -240,10 +122,7 @@ function buildExpressApp() {
     })
   );
 
-  // ========================================
-  // Health Check Routes (BEFORE rate limiting)
-  // ========================================
-  // Root route - for Render health checks
+  // 8) Health checks (before limiter)
   app.get("/", (req, res) => {
     res.status(200).json({
       success: true,
@@ -255,12 +134,8 @@ function buildExpressApp() {
     });
   });
 
-  // HEAD request support for health checks
-  app.head("/", (req, res) => {
-    res.status(200).end();
-  });
+  app.head("/", (req, res) => res.status(200).end());
 
-  // API health endpoint
   app.get("/api/health", (req, res) => {
     res.status(200).json({
       success: true,
@@ -270,28 +145,23 @@ function buildExpressApp() {
     });
   });
 
-  // ========================================
-  // Rate Limiting (Apply to all /api routes)
-  // ========================================
-  app.use("/api", apiLimiter);
+  // 9) Rate limit /api BUT SKIP OPTIONS (preflight)
+  app.use("/api", (req, res, next) => {
+    if (req.method === "OPTIONS") return next(); // do not block preflight [web:118]
+    return apiLimiter(req, res, next);
+  });
 
-  // ========================================
-  // API Routes
-  // ========================================
-  // Mount role and permission routes
+  // 10) Routes
   app.use("/api/roles", roleRoutes);
   app.use("/api/permissions", permissionRoutes);
-
-  // Attach remaining routes
   attachRoutes(app);
 
-  // ========================================
-  // Error Handling (MUST BE LAST)
-  // ========================================
+  // 11) Errors last
   app.use(notFound);
   app.use(errorHandler);
 
   return app;
 }
+
 
 module.exports = buildExpressApp;

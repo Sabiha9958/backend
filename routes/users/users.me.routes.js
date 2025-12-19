@@ -1,3 +1,4 @@
+// routes/users/users.me.routes.js
 const express = require("express");
 const router = express.Router();
 
@@ -18,7 +19,7 @@ const {
 // Get current user profile
 router.get("/me", protect, userController.getCurrentUserProfile);
 
-// Update current user profile
+// Update current user profile (JSON)
 router.put(
   "/me",
   protect,
@@ -32,10 +33,10 @@ router.put(
   "/me/profile",
   protect,
   uploadLimiter,
-  cleanupUploadedFiles,
   uploadAvatar,
   handleMulterError,
-  userController.updateProfileWithAvatar
+  userController.updateProfileWithAvatar,
+  cleanupUploadedFiles
 );
 
 // Upload/update avatar
@@ -43,10 +44,10 @@ router.post(
   "/me/avatar",
   protect,
   uploadLimiter,
-  cleanupUploadedFiles,
   uploadAvatar,
   handleMulterError,
-  userController.uploadAvatar
+  userController.uploadAvatar,
+  cleanupUploadedFiles
 );
 
 // Delete avatar
@@ -57,15 +58,15 @@ router.delete(
   userController.deleteAvatar
 );
 
-// Upload/update cover image
+// Upload/update cover image (if you really upload cover files)
 router.post(
   "/me/cover",
   protect,
   uploadLimiter,
-  cleanupUploadedFiles,
   uploadCover,
   handleMulterError,
-  userController.uploadCoverImage
+  userController.uploadCoverImage,
+  cleanupUploadedFiles
 );
 
 module.exports = router;

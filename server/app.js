@@ -62,9 +62,95 @@ function corsOptions() {
   };
 }
 
-
 // ============================================================================
 // Security Configuration (Helmet)
+// ============================================================================
+function helmetOptions() {
+  return {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  };
+}
+
+// ============================================================================
+// Middleware Utilities
+// ============================================================================
+function httpLogger() {
+  return morgan("combined", {
+    stream: {
+      write: (message) => logger.info(message.trim()),
+    },
+    skip: (req) => req.url === "/api/health" || req.url === "/",
+  });
+}
+
+function requestId() {
+  return (req, res, next) => {
+    req.id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    res.setHeader("X-Request-Id", req.id);
+    next();
+  };
+}
+
+function requestTimeout() {
+  return (req, res, next) => {
+    const timeout = CONFIG.REQUEST_TIMEOUT || 30000;
+    req.setTimeout(timeout, () => {
+      logger.warn(`⏱️ Request timeout: ${req.method} ${req.url}`);
+      if (!res.headersSent) {
+        res.status(408).json({
+          success: false,
+          message: "Request timeout",
+        });
+      }
+    });
+    next();
+  };
+}
+
+function slowRequestMonitor() {
+  return (req, res, next) => {
+    const start = Date.now();
+    res.on("finish", () => {
+      const duration = Date.now() - start;
+      if (duration > 3000) {
+        logger.warn(
+          `🐌 Slow request: ${req.method} ${req.url} took ${duration}ms`
+        );
+      }
+    });
+    next();
+  };
+}
+
+function trimBodyStrings() {
+  return (req, res, next) => {
+    if (req.body && typeof req.body === "object") {
+      Object.keys(req.body).forEach((key) => {
+        if (typeof req.body[key] === "string") {
+          req.body[key] = req.body[key].trim();
+        }
+      });
+    }
+    next();
+  };
+}
+
+// ============================================================================
+// Express App Builder
 // ============================================================================
 function buildExpressApp() {
   const app = express();
@@ -81,21 +167,21 @@ function buildExpressApp() {
   app.use(c);
 
   // Explicit preflight support (safe to include)
-  app.options("*", c); // [web:8]
+  app.options("*", c);
 
-  // 3) Compression (ok here)
+  // 3) Compression
   app.use(
     compression({
       filter: (req, res) =>
         req.headers["x-no-compression"] ? false : compression.filter(req, res),
-      level: CONFIG.COMPRESSION_LEVEL,
+      level: CONFIG.COMPRESSION_LEVEL || 6,
       threshold: 1024,
     })
   );
 
   // 4) Body parsing
-  app.use(express.json({ limit: CONFIG.MAX_FILE_SIZE }));
-  app.use(express.urlencoded({ limit: CONFIG.MAX_FILE_SIZE, extended: true }));
+  app.use(express.json({ limit: CONFIG.MAX_FILE_SIZE || "10mb" }));
+  app.use(express.urlencoded({ limit: CONFIG.MAX_FILE_SIZE || "10mb", extended: true }));
 
   // 5) Observability
   app.use(httpLogger());
@@ -110,7 +196,7 @@ function buildExpressApp() {
   app.use(
     "/uploads",
     express.static(UPLOAD_BASE, {
-      maxAge: CONFIG.IS_PRODUCTION ? CONFIG.CACHE_MAX_AGE : 0,
+      maxAge: CONFIG.IS_PRODUCTION ? CONFIG.CACHE_MAX_AGE || "1d" : 0,
       etag: false,
       lastModified: true,
       setHeaders: (res) => {
@@ -128,8 +214,8 @@ function buildExpressApp() {
       success: true,
       message: "Backend API is running",
       service: "Complaint Management System",
-      version: CONFIG.API_VERSION,
-      environment: CONFIG.NODE_ENV,
+      version: CONFIG.API_VERSION || "1.0.0",
+      environment: CONFIG.NODE_ENV || "development",
       timestamp: new Date().toISOString(),
     });
   });
@@ -147,7 +233,7 @@ function buildExpressApp() {
 
   // 9) Rate limit /api BUT SKIP OPTIONS (preflight)
   app.use("/api", (req, res, next) => {
-    if (req.method === "OPTIONS") return next(); // do not block preflight [web:118]
+    if (req.method === "OPTIONS") return next();
     return apiLimiter(req, res, next);
   });
 
@@ -162,6 +248,5 @@ function buildExpressApp() {
 
   return app;
 }
-
 
 module.exports = buildExpressApp;

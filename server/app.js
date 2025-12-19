@@ -17,6 +17,9 @@ const { UPLOAD_BASE } = require("../middleware/upload/upload.config");
 const roleRoutes = require("../routes/role/roleRoutes");
 const permissionRoutes = require("../routes/role/permissionRoutes");
 
+// ============================================================================
+// CORS Configuration
+// ============================================================================
 function buildAllowedOrigins() {
   const env = process.env.ALLOWED_ORIGINS;
   if (!env) {
@@ -35,13 +38,18 @@ function corsOptions() {
 
   return {
     origin: (origin, callback) => {
-      if (
-        !origin ||
-        allowedOrigins.includes("*") ||
-        allowedOrigins.includes(origin)
-      ) {
+      // Allow requests with no origin (mobile apps, Postman, etc.)
+      if (!origin) return callback(null, true);
+
+      // Allow all origins if wildcard is set
+      if (allowedOrigins.includes("*")) return callback(null, true);
+
+      // Check if origin is in allowed list
+      if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
+
+      // Log and reject blocked origins
       logger.warn(`🚫 CORS blocked: ${origin}`);
       return callback(
         new Error(`CORS policy violation: ${origin} not allowed`)
@@ -58,10 +66,13 @@ function corsOptions() {
       "Origin",
     ],
     exposedHeaders: ["Content-Range", "X-Content-Range", "X-Request-Id"],
-    maxAge: 86400,
+    maxAge: 86400, // 24 hours
   };
 }
 
+// ============================================================================
+// Security Configuration (Helmet)
+// ============================================================================
 function helmetOptions() {
   return {
     contentSecurityPolicy: {
@@ -75,8 +86,7 @@ function helmetOptions() {
         mediaSrc: ["'self'"],
         objectSrc: ["'none'"],
         frameSrc: ["'none'"],
-        // helmet expects an array or undefined; avoid null
-        ...(CONFIG.IS_PRODUCTION ? {} : { upgradeInsecureRequests: null }),
+        upgradeInsecureRequests: CONFIG.IS_PRODUCTION ? [] : null,
       },
     },
     crossOriginEmbedderPolicy: false,
@@ -92,6 +102,11 @@ function helmetOptions() {
   };
 }
 
+// ============================================================================
+// Custom Middleware
+// ============================================================================
+
+// Add unique request ID to each request
 function requestId() {
   return (req, res, next) => {
     req.id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
@@ -100,10 +115,11 @@ function requestId() {
   };
 }
 
+// Timeout protection for long-running requests
 function requestTimeout() {
   return (req, res, next) => {
     req.setTimeout(CONFIG.REQUEST_TIMEOUT, () => {
-      logger.error(`⏱️ Timeout: ${req.method} ${req.originalUrl}`);
+      logger.error(`⏱️ Request timeout: ${req.method} ${req.originalUrl}`);
       if (!res.headersSent) {
         res.status(408).json({
           success: false,
@@ -117,6 +133,7 @@ function requestTimeout() {
   };
 }
 
+// Monitor and log slow requests
 function slowRequestMonitor() {
   return (req, res, next) => {
     const start = Date.now();
@@ -124,11 +141,11 @@ function slowRequestMonitor() {
       const duration = Date.now() - start;
       if (duration > 5000) {
         logger.error(
-          `🐌 Slow request: ${req.method} ${req.originalUrl} - ${duration}ms`
+          `🐌 Very slow request: ${req.method} ${req.originalUrl} - ${duration}ms`
         );
       } else if (duration > 3000) {
         logger.warn(
-          `⚠️ Very slow request: ${req.method} ${req.originalUrl} - ${duration}ms`
+          `⚠️ Slow request: ${req.method} ${req.originalUrl} - ${duration}ms`
         );
       }
     });
@@ -136,6 +153,7 @@ function slowRequestMonitor() {
   };
 }
 
+// Trim whitespace from string body fields
 function trimBodyStrings() {
   return (req, _res, next) => {
     if (!req.body || typeof req.body !== "object") return next();
@@ -149,24 +167,40 @@ function trimBodyStrings() {
   };
 }
 
+// HTTP request logger configuration
 function httpLogger() {
-  if (CONFIG.IS_DEVELOPMENT) return morgan("dev");
+  if (CONFIG.IS_DEVELOPMENT) {
+    return morgan("dev");
+  }
+
   return morgan("combined", {
     stream: logger.stream,
-    skip: (req) => req.url === "/api/health",
+    skip: (req) => req.url === "/api/health" || req.url === "/",
   });
 }
 
+// ============================================================================
+// Express App Builder
+// ============================================================================
 function buildExpressApp() {
   const app = express();
 
-  // Core app settings
+  // ========================================
+  // Core Settings
+  // ========================================
   app.set("trust proxy", 1);
   app.set("etag", false);
+  app.disable("x-powered-by");
 
-  // Security + platform middleware
+  // ========================================
+  // Security Middleware
+  // ========================================
   app.use(helmet(helmetOptions()));
   app.use(cors(corsOptions()));
+
+  // ========================================
+  // Compression
+  // ========================================
   app.use(
     compression({
       filter: (req, res) =>
@@ -176,20 +210,28 @@ function buildExpressApp() {
     })
   );
 
-  // Body parsing
+  // ========================================
+  // Body Parsing
+  // ========================================
   app.use(express.json({ limit: CONFIG.MAX_FILE_SIZE }));
   app.use(express.urlencoded({ limit: CONFIG.MAX_FILE_SIZE, extended: true }));
 
-  // Observability
+  // ========================================
+  // Request Observability
+  // ========================================
   app.use(httpLogger());
   app.use(requestId());
   app.use(requestTimeout());
   app.use(slowRequestMonitor());
 
-  // Input hygiene
+  // ========================================
+  // Input Sanitization
+  // ========================================
   app.use(trimBodyStrings());
 
-  // Static files
+  // ========================================
+  // Static File Serving
+  // ========================================
   app.use(
     "/uploads",
     express.static(UPLOAD_BASE, {
@@ -205,15 +247,54 @@ function buildExpressApp() {
     })
   );
 
-  // Rate limiting (apply to all /api routes)
+  // ========================================
+  // Health Check Routes (BEFORE rate limiting)
+  // ========================================
+  // Root route - for Render health checks
+  app.get("/", (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: "Backend API is running",
+      service: "Complaint Management System",
+      version: CONFIG.API_VERSION,
+      environment: CONFIG.NODE_ENV,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // HEAD request support for health checks
+  app.head("/", (req, res) => {
+    res.status(200).end();
+  });
+
+  // API health endpoint
+  app.get("/api/health", (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: "API is healthy",
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ========================================
+  // Rate Limiting (Apply to all /api routes)
+  // ========================================
   app.use("/api", apiLimiter);
 
-  // Routes (mount “simple” routers first, then the rest)
+  // ========================================
+  // API Routes
+  // ========================================
+  // Mount role and permission routes
   app.use("/api/roles", roleRoutes);
   app.use("/api/permissions", permissionRoutes);
+
+  // Attach remaining routes
   attachRoutes(app);
 
-  // Errors (must be last)
+  // ========================================
+  // Error Handling (MUST BE LAST)
+  // ========================================
   app.use(notFound);
   app.use(errorHandler);
 

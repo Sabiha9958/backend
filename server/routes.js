@@ -25,7 +25,7 @@ const attachRoutes = (app, CONFIG, fs, mongoose) => {
         reports: "/api/reports",
         admin: "/api/admin",
       },
-      websocket: `ws://localhost:${CONFIG.PORT}/ws/complaints`,
+      websocket: `wss://frontend-8if6.onrender.com/ws/complaints`,
     });
   });
 
